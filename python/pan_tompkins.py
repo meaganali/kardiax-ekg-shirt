@@ -154,7 +154,7 @@ class PanTompkins:
         """
         # Initialise thresholds from first 2 seconds of data
         init_end = min(2 * self.fs, len(mwi))
-        self.SPKI  = np.max(mwi[:init_end]) * 0.25
+        self.SPKI  = np.max(mwi[:init_end]) * 0.15
         self.NPKI  = np.mean(mwi[:init_end]) * 0.5
         self.THRESHOLD_I1 = self.NPKI + 0.25 * (self.SPKI - self.NPKI)
         self.THRESHOLD_I2 = 0.5 * self.THRESHOLD_I1
