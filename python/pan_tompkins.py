@@ -1,7 +1,6 @@
 """
 pan_tompkins.py
 Kardiax EKG Shirt - ECE 481 Senior Design
-Author: Deceli Soto
 
 Pan-Tompkins QRS Detection Algorithm
 -------------------------------------
