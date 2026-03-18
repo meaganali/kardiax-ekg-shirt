@@ -396,3 +396,5 @@ if __name__ == "__main__":
     # Test 2: MIT-BIH (runs if wfdb installed)
     # Try record "100" for clean normal sinus rhythm
     test_with_mitbih(record="100", duration_sec=30)
+    test_with_mitbih(record="101", duration_sec=30)
+    test_with_mitbih(record="103", duration_sec=30)
