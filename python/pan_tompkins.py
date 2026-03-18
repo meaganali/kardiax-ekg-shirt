@@ -290,8 +290,8 @@ def test_with_mitbih(record="100", duration_sec=30):
         return
 
     print(f"Loading MIT-BIH record {record} from PhysioNet...")
-    rec = wfdb.rdrecord(f'mitdb/{record}', pn_dir='mitdb', sampto=360*duration_sec)
-    ann = wfdb.rdann(f'mitdb/{record}', 'atr', pn_dir='mitdb', sampto=360*duration_sec)
+    rec = wfdb.rdrecord(record, pn_dir='mitdb', sampto=360*duration_sec)
+    ann = wfdb.rdann(record, 'atr', pn_dir='mitdb', sampto=360*duration_sec)
 
     ecg_raw = rec.p_signal[:, 0]  # Channel 0 (MLII lead)
     fs_mitbih = rec.fs             # 360 Hz for MIT-BIH
