@@ -1,7 +1,6 @@
 """
 beat_classifier.py
 Kardiax EKG Shirt — ECE 481 Senior Design
-Author: Meagan Ali
 
 Beat Classification ML Model
 ------------------------------
@@ -375,24 +374,40 @@ def train_stage1(X, y):
 def train_stage2(X, y):
     """
     Stage 2: Beat type classifier.
-    Multiclass — N (normal), V (PVC), A (supraventricular), O (other).
+    Multiclass — N (normal), V (PVC), A (supraventricular).
     """
     print("\n── Stage 2: Beat Type Classifier ──")
 
-    # Remove 'O' (other) class if too few samples — can't train reliably
+    # Drop 'O' class — too few samples to train reliably
     mask = y != 'O'
-    if np.sum(~mask) < 50:
-        print(f"  Dropping 'O' class ({np.sum(~mask)} samples — too few)")
-        X = X[mask]
-        y = y[mask]
+    X = X[mask]
+    y = y[mask]
+    print(f"  Dropped 'O' class. Training on N, V, A only.")
+
+    # ── Oversample minority classes (V and A) to fix 92%/5%/1% imbalance ──
+    # Repeating minority samples until all classes are equal size
+    classes, counts = np.unique(y, return_counts=True)
+    max_count = np.max(counts)
+    X_parts, y_parts = [X], [y]
+    np.random.seed(42)
+    for cls, cnt in zip(classes, counts):
+        if cnt < max_count:
+            idx = np.where(y == cls)[0]
+            n_extra = max_count - cnt
+            extra_idx = np.random.choice(idx, size=n_extra, replace=True)
+            X_parts.append(X[extra_idx])
+            y_parts.append(y[extra_idx])
+            print(f"  Oversampled class '{cls}': {cnt} → {max_count}")
+    X = np.vstack(X_parts)
+    y = np.concatenate(y_parts)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
     model = RandomForestClassifier(
-        n_estimators=200,
-        max_depth=15,
-        min_samples_leaf=3,
+        n_estimators=300,
+        max_depth=20,
+        min_samples_leaf=2,
         class_weight='balanced',
         random_state=42,
         n_jobs=-1,

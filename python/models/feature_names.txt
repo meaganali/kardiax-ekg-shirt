@@ -1,0 +1,9 @@
+RR_current_ms
+RR_prev_ms
+RR_next_ms
+RR_ratio_prev
+RR_ratio_next
+RR_local_mean_ms
+RR_deviation
+QRS_amplitude
+beat_position
