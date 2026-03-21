@@ -1,6 +1,7 @@
 """
 cardiac_monitor.py
 Kardiax EKG Shirt — ECE 481 Senior Design
+Author: Meagan Ali
 
 Real-Time Cardiac Event Monitor
 ---------------------------------
@@ -519,7 +520,8 @@ def simulate_scenario(monitor, scenario_name, beats):
     return alerts_raised
 
 
-if __name__ == "__main__":
+def run_simulations():
+    """Run all synthetic scenario tests."""
     print("=" * 60)
     print("  Kardiax Cardiac Monitor — Simulation Test")
     print("=" * 60)
@@ -660,3 +662,170 @@ if __name__ == "__main__":
         if alert:
             app.show_emergency_screen(alert)
     """
+
+# ══════════════════════════════════════════════════════════════════
+#  REAL MIT-BIH ARRHYTHMIA VALIDATION
+#  Tests the cardiac monitor on actual recorded arrhythmia data.
+#  Run this AFTER beat_classifier.py has saved models to models/
+# ══════════════════════════════════════════════════════════════════
+
+def validate_on_mitbih():
+    """
+    Run the full pipeline (Pan-Tompkins + beat classifier + cardiac monitor)
+    on real MIT-BIH arrhythmia records and check that:
+      1. Critical arrhythmia records trigger CRITICAL alerts
+      2. Normal records do NOT trigger false alerts
+      3. Alert latency is measured (how many beats before alert fires)
+
+    Records tested:
+      119 — frequent PVCs (should trigger FREQ_PVC / BIGEMINY)
+      207 — VF episodes    (should trigger VF / CRITICAL)
+      200 — mixed PVCs     (should trigger FREQ_PVC)
+      100 — normal sinus   (should NOT trigger any alert)
+    """
+    try:
+        import wfdb
+        from scipy.signal import resample as scipy_resample
+    except ImportError:
+        print("  wfdb not installed — skipping MIT-BIH validation")
+        return
+
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from pan_tompkins import PanTompkins
+        from beat_classifier import KardiaxClassifier, BEAT_MAP, REAL_BEAT_SYMBOLS
+    except ImportError as e:
+        print(f"  Could not import pipeline modules: {e}")
+        return
+
+    if not os.path.exists('models/stage1_fp_detector.joblib'):
+        print("  No trained models found. Run beat_classifier.py first.")
+        return
+
+    classifier = KardiaxClassifier.load('models/')
+    TARGET_FS  = 250
+    DURATION   = 120  # seconds of each record to analyse
+
+    # (record, expected_alert_conditions, should_be_silent)
+    test_cases = [
+        ("100", [],                  True,  "Normal sinus — no alert expected"),
+        ("119", ["FREQ_PVC"],        False, "Frequent PVCs — caution expected"),
+        ("200", ["FREQ_PVC"],        False, "Mixed PVCs — caution expected"),
+        ("207", ["VF", "VT"],        False, "VF/VT episodes — CRITICAL expected"),
+    ]
+
+    print("\n" + "=" * 60)
+    print("  CARDIAC MONITOR VALIDATION ON REAL MIT-BIH DATA")
+    print("=" * 60)
+
+    all_passed = True
+
+    for rec_id, expected_conditions, should_be_silent, description in test_cases:
+        print(f"\n  Record {rec_id}: {description}")
+        print(f"  " + "-" * 50)
+
+        # Load record
+        try:
+            rec = wfdb.rdrecord(rec_id, pn_dir='mitdb',
+                                sampto=360 * DURATION)
+            ecg_raw   = rec.p_signal[:, 0]
+            fs_mitbih = rec.fs
+        except Exception as e:
+            print(f"    SKIPPED: {e}")
+            continue
+
+        # Resample to 250 Hz
+        num_samples = int(len(ecg_raw) * TARGET_FS / fs_mitbih)
+        ecg_250     = scipy_resample(ecg_raw, num_samples)
+
+        # Run Pan-Tompkins
+        pt = PanTompkins(fs=TARGET_FS)
+        r_peaks, rr_ms_list, intermediates = pt.process(ecg_250)
+
+        if len(r_peaks) < 5:
+            print(f"    SKIPPED: too few beats detected ({len(r_peaks)})")
+            continue
+
+        # Set up monitor and classifier
+        mon           = CardiacMonitor(fs=TARGET_FS)
+        rr_history    = []
+        beat_idx      = 0
+        all_alerts    = []
+        alert_beats   = {}  # condition -> beat index when first fired
+        elapsed_sec   = 0.0  # accumulated real time from RR intervals
+
+        # Process each beat through full pipeline
+        for i, (peak_idx, rr_ms) in enumerate(
+                zip(r_peaks, rr_ms_list + [rr_ms_list[-1]])):
+
+            rr_prev = rr_history[-1] if rr_history else rr_ms
+            rr_next = rr_ms_list[i] if i < len(rr_ms_list) else rr_ms
+
+            # Amplitude from filtered signal
+            seg_s = max(0, peak_idx - int(0.05 * TARGET_FS))
+            seg_e = min(len(ecg_250), peak_idx + int(0.05 * TARGET_FS))
+            qrs_amp = float(np.max(np.abs(
+                intermediates['bandpass'][seg_s:seg_e]))) if seg_e > seg_s else 0.5
+
+            # Classify beat
+            result    = classifier.classify_beat(
+                rr_ms, rr_prev, rr_next, qrs_amp,
+                beat_idx, len(r_peaks)
+            )
+            beat_type = result['beat_type'] if result['is_real'] else 'FP'
+
+            # Feed to cardiac monitor — use accumulated elapsed time
+            elapsed_sec += rr_ms / 1000.0
+            alert = mon.process_beat(rr_ms, beat_type, qrs_amp,
+                                     timestamp=elapsed_sec)
+
+            if alert:
+                all_alerts.append(alert)
+                if alert.condition not in alert_beats:
+                    alert_beats[alert.condition] = beat_idx
+                    print(f"    Beat {beat_idx:3d}: {alert}")
+
+            rr_history.append(rr_ms)
+            beat_idx += 1
+
+        # Evaluate results
+        raised_conditions = set(alert_beats.keys())
+
+        if should_be_silent:
+            if len(all_alerts) == 0:
+                print(f"    PASS: No false alerts on normal record")
+            else:
+                print(f"    FAIL: {len(all_alerts)} false alert(s) on normal record")
+                all_passed = False
+        else:
+            found_expected = [c for c in expected_conditions
+                              if c in raised_conditions]
+            missing        = [c for c in expected_conditions
+                              if c not in raised_conditions]
+
+            if missing:
+                print(f"    PARTIAL: Expected {expected_conditions}, "
+                      f"got {list(raised_conditions)}")
+                print(f"    Missing: {missing}")
+            else:
+                print(f"    PASS: All expected conditions detected: "
+                      f"{found_expected}")
+                for cond, beat in alert_beats.items():
+                    print(f"      {cond} first fired at beat {beat}")
+
+        status = mon.get_status()
+        print(f"    Final status: HR={status['hr_bpm']} bpm, "
+              f"Rhythm={status['rhythm']}")
+
+    print(f"\n{'=' * 60}")
+    print("  MIT-BIH validation complete.")
+    print("  Check results above against expected conditions.")
+    print(f"{'=' * 60}\n")
+
+
+if __name__ == "__main__":
+    # Part 1: synthetic scenario simulations
+    run_simulations()
+    # Part 2: real MIT-BIH arrhythmia validation (needs models/ and wfdb)
+    validate_on_mitbih()

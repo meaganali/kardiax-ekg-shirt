@@ -1,6 +1,7 @@
 """
 beat_classifier.py
 Kardiax EKG Shirt — ECE 481 Senior Design
+Author: Meagan Ali
 
 Beat Classification ML Model
 ------------------------------
@@ -80,17 +81,29 @@ from pan_tompkins import PanTompkins
 
 TARGET_FS = 250   # Hz — matches our hardware
 
-# MIT-BIH records to train/test on
-# Using a broad set to cover normal, noisy, and arrhythmia cases
+# TEST RECORDS: held out completely, NEVER used during training.
+# These are the only records that give honest generalisation metrics.
+TEST_RECORDS = [
+    "100",   # clean normal sinus
+    "108",   # severe baseline wander
+    "111",   # right bundle branch block
+    "119",   # frequent PVCs
+    "200",   # mixed PVCs + supraventricular
+    "208",   # complex mixed arrhythmia
+    "213",   # multiple arrhythmia types
+    "233",   # high PVC burden
+]
+
+# TRAINING RECORDS: model only ever sees these 38 records.
 TRAINING_RECORDS = [
-    "100", "101", "103", "105", "106", "107",
-    "108", "109", "111", "112", "113", "114",
-    "115", "116", "117", "118", "119", "121",
-    "122", "123", "124", "200", "201", "202",
-    "203", "205", "207", "208", "209", "210",
-    "212", "213", "214", "215", "217", "219",
+    "101", "103", "105", "106", "107",
+    "109", "112", "113", "114",
+    "115", "116", "117", "118", "121",
+    "122", "123", "124", "201", "202",
+    "203", "205", "207", "209", "210",
+    "212", "214", "215", "217", "219",
     "220", "221", "222", "223", "228", "230",
-    "231", "232", "233", "234",
+    "231", "232", "234",
 ]
 
 # Beat type mapping — MIT-BIH annotation symbols → our labels
@@ -438,55 +451,74 @@ def train_stage2(X, y):
 #  EVALUATION & PLOTTING
 # ══════════════════════════════════════════════════════════════════
 
-def evaluate_full_pipeline(records_eval, model_s1, scaler_s1,
-                            model_s2, scaler_s2, duration_sec=60):
+def evaluate_full_pipeline(model_s1, scaler_s1,
+                            model_s2, scaler_s2, duration_sec=120):
     """
-    Run the full two-stage pipeline on held-out records and print results.
-    These records were NOT used in training.
+    Honest held-out evaluation on TEST_RECORDS only.
+    None of these records appear in TRAINING_RECORDS.
+    This is the number you report to Dr. Cai.
     """
-    print("\n── Full Pipeline Evaluation (held-out records) ──")
+    print("\n-- Held-Out Test Evaluation (never seen during training) --")
+    print(f"  Test records: {TEST_RECORDS}")
+    print(f"  None of these were in TRAINING_RECORDS.\n")
 
-    eval_records = ["100", "108", "119", "200", "213"]
-    print(f"  Evaluating on: {eval_records}")
+    total_tp1, total_fp1, total_fn1  = 0, 0, 0
+    total_correct2, total_beats2     = 0, 0
 
-    for rec_id in eval_records:
+    for rec_id in TEST_RECORDS:
         f1, l1_true, f2, l2_true = load_record(rec_id, duration_sec)
         if f1 is None:
+            print(f"  Record {rec_id}: SKIPPED")
             continue
 
-        # Stage 1 prediction
-        f1_scaled = scaler_s1.transform(f1)
-        l1_pred   = model_s1.predict(f1_scaled)
-
-        tp = np.sum((l1_pred == 1) & (l1_true == 1))
-        fp = np.sum((l1_pred == 1) & (l1_true == 0))
-        fn = np.sum((l1_pred == 0) & (l1_true == 1))
+        # Stage 1
+        f1_scaled   = scaler_s1.transform(f1)
+        l1_pred     = model_s1.predict(f1_scaled)
+        tp = int(np.sum((l1_pred == 1) & (l1_true == 1)))
+        fp = int(np.sum((l1_pred == 1) & (l1_true == 0)))
+        fn = int(np.sum((l1_pred == 0) & (l1_true == 1)))
         sensitivity = tp / (tp + fn) * 100 if (tp + fn) > 0 else 0
         ppv         = tp / (tp + fp) * 100 if (tp + fp) > 0 else 0
+        total_tp1  += tp; total_fp1 += fp; total_fn1 += fn
 
-        # Stage 2 prediction (only on beats predicted real by Stage 1)
-        real_mask     = l1_pred == 1
-        f2_detected   = f1[real_mask]
-        l2_true_sub   = l2_true if l2_true is not None else np.array([])
+        # Stage 2 (on true-positive beats only)
+        real_mask   = l1_pred == 1
+        f2_detected = f1[real_mask]
+        beat_str    = ""
+        if len(f2_detected) > 0 and l2_true is not None and len(l2_true) > 0:
+            f2_scaled  = scaler_s2.transform(f2_detected)
+            l2_pred    = model_s2.predict(f2_scaled)
+            true_real  = np.array([BEAT_MAP.get(str(s), 'O')
+                                   for s in l2_true if s is not None])
+            # Align lengths before masking to avoid index mismatch
+            min_align  = min(len(l2_pred), len(true_real))
+            l2_pred    = l2_pred[:min_align]
+            true_real  = true_real[:min_align]
+            valid      = true_real != 'O'
+            pv = l2_pred[valid]
+            tv = true_real[valid]
+            mn = min(len(pv), len(tv))
+            if mn > 0:
+                c = int(np.sum(pv[:mn] == tv[:mn]))
+                total_correct2 += c; total_beats2 += mn
+                beat_str = f"Stage 2 beat acc: {c/mn*100:.1f}% ({c}/{mn})"
 
-        beat_report = ""
-        if len(f2_detected) > 0 and len(l2_true) > 0:
-            f2_scaled   = scaler_s2.transform(f2_detected)
-            l2_pred     = model_s2.predict(f2_scaled)
-            # Match against true labels for real beats only
-            true_real   = np.array([BEAT_MAP.get(s, 'O') for s in l2_true
-                                    if s is not None])
-            min_len     = min(len(l2_pred), len(true_real))
-            if min_len > 0:
-                correct = np.sum(l2_pred[:min_len] == true_real[:min_len])
-                beat_acc = correct / min_len * 100
-                beat_report = f"  Beat type acc: {beat_acc:.1f}%"
+        flag = "OK" if sensitivity >= 95 and ppv >= 95 else "FAIL"
+        print(f"  [{flag}] Record {rec_id}:")
+        print(f"       Stage 1  Sens: {sensitivity:.1f}%  "
+              f"PPV: {ppv:.1f}%  (TP={tp} FP={fp} FN={fn})")
+        if beat_str:
+            print(f"       {beat_str}")
 
-        print(f"\n  Record {rec_id}:")
-        print(f"    Stage 1 — Sensitivity: {sensitivity:.1f}%  "
-              f"Positive pred: {ppv:.1f}%")
-        if beat_report:
-            print(f"    Stage 2 —{beat_report}")
+    # Overall
+    o_sens = total_tp1/(total_tp1+total_fn1)*100 if (total_tp1+total_fn1)>0 else 0
+    o_ppv  = total_tp1/(total_tp1+total_fp1)*100 if (total_tp1+total_fp1)>0 else 0
+    o_beat = total_correct2/total_beats2*100 if total_beats2>0 else 0
+    result = "PASS" if o_sens >= 95 and o_ppv >= 95 else "FAIL"
+    print(f"\n  OVERALL HELD-OUT RESULT ({result}):")
+    print(f"    Stage 1 Sensitivity : {o_sens:.1f}%  (target >= 95%)")
+    print(f"    Stage 1 Positive pred: {o_ppv:.1f}%  (target >= 95%)")
+    print(f"    Stage 2 Beat type acc: {o_beat:.1f}%")
 
 
 def plot_confusion_matrix(model, scaler, X, y, title, filename):
@@ -629,12 +661,11 @@ if __name__ == "__main__":
                           "Stage 2: Beat Type",
                           "models/cm_stage2.png")
 
-    # ── 5. Evaluate on held-out records ──
+    # -- 5. Honest held-out test evaluation --
     evaluate_full_pipeline(
-        ["100", "108", "119", "200", "213"],
         model_s1, scaler_s1,
         model_s2, scaler_s2,
-        duration_sec=60
+        duration_sec=120
     )
 
     # ── 6. Quick inference demo ──
